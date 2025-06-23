@@ -1,0 +1,8 @@
+[phases.install]
+cmd = "cd apps/backend && npm install"
+
+[phases.build]
+cmd = "cd apps/backend && npx prisma generate && npm run build"
+
+[start]
+cmd = "cd apps/backend && node dist/main.js" 

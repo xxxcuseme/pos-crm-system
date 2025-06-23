@@ -1,0 +1,435 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// ПОЛЬЗОВАТЕЛИ И ПРАВА ДОСТУПА
+// ============================================================================
+
+model User {
+  id          String      @id @default(cuid())
+  email       String      @unique
+  username    String      @unique
+  password    String
+  firstName   String?
+  lastName    String?
+  phone       String?
+  avatar      String?
+  status      UserStatus  @default(PENDING)
+  isActive    Boolean     @default(true)
+  lastLoginAt DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  roles              UserRole[]
+  sales              Sale[]
+  sessions           Session[]
+  bonusTransactions  BonusTransaction[]
+  counterpartyUsers  CounterpartyUser[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  isSystem    Boolean  @default(false) // Системные роли нельзя удалять
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  id     String @id @default(cuid())
+  userId String
+  roleId String
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@map("user_roles")
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  name        String   @unique // например: "products.create", "sales.view", "reports.export"
+  description String?
+  category    String   // группировка прав: "products", "sales", "users", "reports"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String @id @default(cuid())
+  roleId       String
+  permissionId String
+
+  // Relations
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  userAgent String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// ============================================================================
+// ТОВАРЫ И КАТЕГОРИИ
+// ============================================================================
+
+model Category {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  parentId    String?  // Для вложенных категорий
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryHierarchy")
+  products Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id                String   @id @default(cuid())
+  name              String
+  description       String?
+  sku               String   @unique
+  barcode           String?  @unique
+  price             Decimal  @db.Decimal(12, 2)
+  cost              Decimal? @db.Decimal(12, 2)
+  stock             Int      @default(0)
+  minStock          Int?
+  maxStock          Int?
+  weight            Decimal? @db.Decimal(8, 3) // в кг
+  volume            Decimal? @db.Decimal(8, 3) // в литрах
+  
+  // Интеграция с МойСклад
+  moyskladId        String?  @unique
+  moyskladUpdatedAt DateTime?
+  
+  // Бонусная система
+  bonusPercent      Decimal? @db.Decimal(5, 2) // % бонусов от покупки
+  bonusFixed        Decimal? @db.Decimal(10, 2) // фиксированная сумма бонусов
+  
+  // Управление
+  isActive          Boolean  @default(true)
+  isWeighted        Boolean  @default(false) // товар на вес
+  hasSerialNumbers  Boolean  @default(false)
+  categoryId        String?
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime?
+
+  // Relations
+  category      Category?       @relation(fields: [categoryId], references: [id])
+  serialNumbers ProductSerial[]
+  saleItems     SaleItem[]
+
+  @@map("products")
+}
+
+model ProductSerial {
+  id        String   @id @default(cuid())
+  productId String
+  serial    String   @unique
+  status    SerialStatus @default(AVAILABLE)
+  saleId    String?  // к какой продаже привязан
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sale    Sale?   @relation(fields: [saleId], references: [id])
+
+  @@map("product_serials")
+}
+
+// ============================================================================
+// ПРОДАЖИ
+// ============================================================================
+
+model Sale {
+  id              String     @id @default(cuid())
+  number          String     @unique // номер чека
+  status          SaleStatus @default(ACTIVE)
+  
+  // Суммы
+  subtotal        Decimal    @db.Decimal(12, 2) // сумма без скидок
+  discountAmount  Decimal    @default(0) @db.Decimal(12, 2) // сумма скидки
+  bonusUsed       Decimal    @default(0) @db.Decimal(12, 2) // использовано бонусов
+  total           Decimal    @db.Decimal(12, 2) // итоговая сумма к оплате
+  
+  // Платежи
+  paidAmount      Decimal    @default(0) @db.Decimal(12, 2) // получено денег
+  changeAmount    Decimal    @default(0) @db.Decimal(12, 2) // сдача
+  
+  // Связи
+  customerId      String?
+  userId          String     // кассир
+  counterpartyId  String     // терминал
+  
+  // Даты
+  saleDate        DateTime   @default(now())
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  customer         Customer?         @relation(fields: [customerId], references: [id])
+  user             User              @relation(fields: [userId], references: [id])
+  counterparty     Counterparty      @relation(fields: [counterpartyId], references: [id])
+  items            SaleItem[]
+  payments         SalePayment[]
+  bonusTransactions BonusTransaction[]
+  productSerials   ProductSerial[]
+
+  @@map("sales")
+}
+
+model SaleItem {
+  id          String  @id @default(cuid())
+  saleId      String
+  productId   String
+  
+  quantity    Decimal @db.Decimal(10, 3) // для весового товара
+  unitPrice   Decimal @db.Decimal(12, 2) // цена за единицу
+  discount    Decimal @default(0) @db.Decimal(12, 2) // скидка на позицию
+  subtotal    Decimal @db.Decimal(12, 2) // сумма позиции
+  
+  // Метаданные
+  productName String  // на момент продажи
+  productSku  String  // на момент продажи
+
+  // Relations
+  sale    Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@map("sale_items")
+}
+
+model SalePayment {
+  id            String        @id @default(cuid())
+  saleId        String
+  amount        Decimal       @db.Decimal(12, 2)
+  method        PaymentMethod
+  status        PaymentStatus @default(COMPLETED)
+  transactionId String?       // ID транзакции в платежной системе
+  cardLast4     String?       // последние 4 цифры карты
+  createdAt     DateTime      @default(now())
+
+  // Relations
+  sale Sale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  @@map("sale_payments")
+}
+
+// ============================================================================
+// КОНТРАГЕНТЫ (ТЕРМИНАЛЫ)
+// ============================================================================
+
+model Counterparty {
+  id          String   @id @default(cuid())
+  name        String
+  type        CounterpartyType
+  code        String?  @unique // внутренний код
+  inn         String?
+  kpp         String?
+  address     String?
+  phone       String?
+  email       String?
+  
+  // Настройки терминала
+  settings    Json?    // JSON с настройками терминала
+  isActive    Boolean  @default(true)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  sales Sale[]
+  users CounterpartyUser[]
+
+  @@map("counterparties")
+}
+
+model CounterpartyUser {
+  id             String @id @default(cuid())
+  counterpartyId String
+  userId         String
+
+  // Relations
+  counterparty Counterparty @relation(fields: [counterpartyId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([counterpartyId, userId])
+  @@map("counterparty_users")
+}
+
+// ============================================================================
+// КЛИЕНТЫ И БОНУСНАЯ СИСТЕМА
+// ============================================================================
+
+model Customer {
+  id            String   @id @default(cuid())
+  firstName     String?
+  lastName      String?
+  middleName    String?
+  email         String?  @unique
+  phone         String?  @unique
+  birthDate     DateTime?
+  gender        Gender?
+  
+  // Адрес
+  address       String?
+  city          String?
+  postalCode    String?
+  
+  // Бонусы
+  bonusBalance  Decimal  @default(0) @db.Decimal(12, 2)
+  
+  // Настройки
+  isActive      Boolean  @default(true)
+  allowSms      Boolean  @default(true)
+  allowEmail    Boolean  @default(true)
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime?
+
+  // Relations
+  sales             Sale[]
+  bonusTransactions BonusTransaction[]
+
+  @@map("customers")
+}
+
+model BonusTransaction {
+  id          String            @id @default(cuid())
+  customerId  String
+  userId      String?           // кто начислил/списал
+  saleId      String?           // связанная продажа
+  
+  type        BonusTransactionType
+  amount      Decimal           @db.Decimal(12, 2) // положительное - начисление, отрицательное - списание
+  description String?
+  
+  // Баланс после операции
+  balanceAfter Decimal          @db.Decimal(12, 2)
+  
+  createdAt   DateTime          @default(now())
+
+  // Relations
+  customer Customer @relation(fields: [customerId], references: [id])
+  user     User?     @relation(fields: [userId], references: [id])
+  sale     Sale?     @relation(fields: [saleId], references: [id])
+
+  @@map("bonus_transactions")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum UserStatus {
+  PENDING     // заявка подана
+  APPROVED    // одобрен
+  REJECTED    // отклонен
+  SUSPENDED   // заблокирован
+}
+
+enum SerialStatus {
+  AVAILABLE
+  SOLD
+  RESERVED
+  DEFECTIVE
+}
+
+enum SaleStatus {
+  ACTIVE
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  BANK_TRANSFER
+  DIGITAL_WALLET
+  BONUS
+  MIXED // смешанная оплата
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum CounterpartyType {
+  TERMINAL    // POS терминал
+  WAREHOUSE   // склад
+  SUPPLIER    // поставщик
+  OTHER       // прочее
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum BonusTransactionType {
+  ACCRUAL     // начисление
+  SPENDING    // трата
+  ADJUSTMENT  // корректировка
+  EXPIRATION  // списание по истечению срока
+} 
