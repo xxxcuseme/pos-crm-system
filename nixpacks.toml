@@ -1,0 +1,15 @@
+[phases.setup]
+nixPkgs = ["nodejs-18_x", "npm"]
+
+[phases.install]
+cmd = "cd apps/backend && npm ci"
+
+[phases.build]
+cmd = "cd apps/backend && npx prisma generate && npm run build"
+
+[start]
+cmd = "cd apps/backend && node dist/main.js"
+
+[variables]
+NODE_ENV = "production"
+PORT = "3001" 
